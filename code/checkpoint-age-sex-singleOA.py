@@ -9,6 +9,7 @@ import pandas as pd
 import numpy as np
 import os
 from dgl.nn import HeteroGraphConv, GraphConv
+import plotly.graph_objects as go
 
 # Define the age groups and sex categories
 age_groups = ['0_4', '5_7', '8_9', '10_14', '15', '16_17', '18_19', '20_24', '25_29', '30_34', '35_39', '40_44', '45_49', '50_54', '55_59', '60_64', '65_69', '70_74', '75_79', '80_84', '85+']
@@ -229,8 +230,11 @@ optimizer = optim.Adam(model.parameters(), lr=0.0001)
 # Initialize the best loss to a large value
 best_loss = float('inf')
 
+# List to store loss values
+loss_values = []
+
 # Optimization loop
-num_iterations = 2000
+num_iterations = 200
 for iteration in range(num_iterations):
     model.train()
     optimizer.zero_grad()
@@ -241,6 +245,9 @@ for iteration in range(num_iterations):
     # Backpropagation
     loss.backward()
     optimizer.step()
+
+    # Store the loss value
+    loss_values.append(loss.item())
     
     # Check if the new graph is better
     if loss < best_loss:
@@ -254,29 +261,92 @@ for iteration in range(num_iterations):
         # Remove the edge (Reconstructing the graph is more efficient than removing edges directly in DGL)
         hetero_graph = dgl.remove_edges(hetero_graph, edge_id, etype=etype)
         
-        # Add a new random edge
+        # Ensure we maintain the constraint by adding a new edge
         if etype == 'has_age':
             new_dst = np.random.choice(hetero_graph.nodes('age'))
+            hetero_graph.add_edges(src, new_dst, etype=etype)
         else:
             new_dst = np.random.choice(hetero_graph.nodes('sex'))
+            hetero_graph.add_edges(src, new_dst, etype=etype)
         
-        hetero_graph.add_edges(src, new_dst, etype=etype)
+        new_loss = objective_function(hetero_graph, sex_by_age_df, model)
         
-        # Calculate the objective function
-        loss = objective_function(hetero_graph, sex_by_age_df, model)
-        
-        # If the new graph is better, keep the change, otherwise revert
-        if loss < best_loss:
-            best_loss = loss
+        if new_loss < best_loss:
+            best_loss = new_loss
         else:
-            # Revert the change by reconstructing the graph
-            hetero_graph = dgl.add_edges(hetero_graph, src, dst, etype=etype)
+            # Revert the change by reconstructing the original edge
+            hetero_graph.add_edges(src, dst, etype=etype)
     
     print(f"Iteration {iteration}, Loss: {loss.item()}")
 
 print("Final graph structure:")
 print(hetero_graph)
 
+
+# Create the convergence plot using Plotly
+fig = go.Figure()
+fig.add_trace(go.Scatter(y=loss_values, mode='lines', name='Loss'))
+
+# Update layout
+fig.update_layout(
+    title='Convergence Plot for Loss Function',
+    xaxis_title='Iteration',
+    yaxis_title='Loss',
+)
+
+# Save the plot as an image
+fig.write_image('convergence_plot_sex_age.png')
+
+# Extract the actual and predicted distributions for radar chart
+def get_distribution(tensor, category_labels):
+    distribution = torch.sum(tensor, dim=0).cpu().detach().numpy()
+    return {label: value for label, value in zip(category_labels, distribution)}
+
+# Get actual distribution from sex_by_age_df
+actual_distribution = get_distribution(torch.tensor(sex_by_age_df.values, dtype=torch.float32), sex_by_age_df.columns)
+
+# Get predicted distribution from the model
+predicted_distribution_tensor = model(hetero_graph)
+predicted_distribution = get_distribution(predicted_distribution_tensor, sex_by_age_df.columns)
+
+# Create radar chart
+fig = go.Figure()
+
+# Add actual distribution trace
+fig.add_trace(go.Scatterpolar(
+    r=list(actual_distribution.values()),
+    theta=list(actual_distribution.keys()),
+    fill='toself',
+    name='Actual Distribution',
+    line=dict(color='red')
+))
+
+# Add predicted distribution trace
+fig.add_trace(go.Scatterpolar(
+    r=list(predicted_distribution.values()),
+    theta=list(predicted_distribution.keys()),
+    fill='toself',
+    name='Predicted Distribution',
+    line=dict(color='blue')
+))
+
+# Update layout
+fig.update_layout(
+    polar=dict(
+        radialaxis=dict(
+            visible=True,
+            type='log'
+        )
+    ),
+    title='Radar Chart for Age and Sex Distribution',
+    legend=dict(
+        x=0.1,
+        y=1.1
+    )
+)
+
+# Save the radar chart as an image
+fig.write_image('radar_chart_sex_age.png')
 
 # TODO: include a comprehensive list of oxford_areas. How do we want to calculate the loss in this case? by OA, or as a sum of all areas 
 # TODO: need to implement a method to adhere to constraints - each individual node has to be connected to exactly one age node and one sex node 
