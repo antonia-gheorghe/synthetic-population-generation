@@ -1,12 +1,10 @@
 import os
+import random
 import pandas as pd
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
-from torch_geometric.nn import SAGEConv
-from torch.nn import CrossEntropyLoss
-from sklearn.preprocessing import LabelEncoder
+from torch_geometric.nn import SAGEConv, BatchNorm
 
 # Load the data from individual tables
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -55,40 +53,25 @@ node_features = torch.cat([person_nodes, age_nodes, sex_nodes, ethnicity_nodes],
 # Edge index construction
 edge_index = []
 
-# Connect each person to age nodes based on the age_df
-person_idx = 0
-for _, row in age_df.iterrows():
-    for age in age_groups:
-        count = int(row[age])
-        for _ in range(count):
-            if person_idx < num_persons:
-                age_id = age_map[age] + num_persons
-                edge_index.append([person_idx, age_id])
-                person_idx += 1
+def generate_edge_index(num_persons):
+    edge_index = []
+    age_start_idx = num_persons
+    sex_start_idx = age_start_idx + len(age_groups)
+    ethnicity_start_idx = sex_start_idx + len(sex_categories)
 
-# Reset person index and connect each person to sex nodes based on the sex_df
-person_idx = 0
-for _, row in sex_df.iterrows():
-    for sex in sex_categories:
-        count = int(row[sex])
-        for _ in range(count):
-            if person_idx < num_persons:
-                sex_id = sex_map[sex] + num_persons + len(age_groups)
-                edge_index.append([person_idx, sex_id])
-                person_idx += 1
+    for i in range(num_persons):
+        age_category = random.choice(range(age_start_idx, sex_start_idx))
+        sex_category = random.choice(range(sex_start_idx, ethnicity_start_idx))
+        ethnicity_category = random.choice(range(ethnicity_start_idx, ethnicity_start_idx + len(ethnicity_categories)))
+        print(age_category)
+        edge_index.append([i, age_category])
+        edge_index.append([i, sex_category])
+        edge_index.append([i, ethnicity_category])
 
-# Reset person index and connect each person to ethnicity nodes based on the ethnicity_df
-person_idx = 0
-for _, row in ethnicity_df.iterrows():
-    for ethnicity in ethnicity_categories:
-        count = int(row[ethnicity])
-        for _ in range(count):
-            if person_idx < num_persons:
-                ethnicity_id = ethnicity_map[ethnicity] + num_persons + len(age_groups) + len(sex_categories)
-                edge_index.append([person_idx, ethnicity_id])
-                person_idx += 1
+    edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+    return edge_index
 
-edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+edge_index = generate_edge_index(num_persons)
 
 # Create the data object for PyTorch Geometric
 data = Data(x=node_features, edge_index=edge_index)
@@ -117,35 +100,49 @@ for _, row in ethnic_by_sex_by_age_df.iterrows():
 class EnhancedGNNModel(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels_age, out_channels_sex, out_channels_ethnicity):
         super(EnhancedGNNModel, self).__init__()
-        # Define the GraphSAGE layers for the model
         self.conv1 = SAGEConv(in_channels, hidden_channels)
         self.conv2 = SAGEConv(hidden_channels, hidden_channels)
         self.conv3 = SAGEConv(hidden_channels, hidden_channels)
+        self.batch_norm1 = BatchNorm(hidden_channels)
+        self.batch_norm2 = BatchNorm(hidden_channels)
+        self.batch_norm3 = BatchNorm(hidden_channels)
+        self.dropout = torch.nn.Dropout(0.5)
         self.conv4_age = SAGEConv(hidden_channels, out_channels_age)
         self.conv4_sex = SAGEConv(hidden_channels, out_channels_sex)
         self.conv4_ethnicity = SAGEConv(hidden_channels, out_channels_ethnicity)
 
     def forward(self, data):
-        # Perform forward pass through the network
         x, edge_index = data.x, data.edge_index
         x = self.conv1(x, edge_index)
+        x = self.batch_norm1(x)
         x = F.relu(x)
+        x = self.dropout(x)
         x = self.conv2(x, edge_index)
+        x = self.batch_norm2(x)
         x = F.relu(x)
+        x = self.dropout(x)
         x = self.conv3(x, edge_index)
+        x = self.batch_norm3(x)
         x = F.relu(x)
-        # Separate outputs for age, sex, and ethnicity
+        x = self.dropout(x)
         age_out = self.conv4_age(x, edge_index)
         sex_out = self.conv4_sex(x, edge_index)
         ethnicity_out = self.conv4_ethnicity(x, edge_index)
         return age_out, sex_out, ethnicity_out
 
+
+# Custom loss function
+def custom_loss_function(age_out, sex_out, ethnicity_out, y_age, y_sex, y_ethnicity):
+    loss_age = F.cross_entropy(age_out, y_age)
+    loss_sex = F.cross_entropy(sex_out, y_sex)
+    loss_ethnicity = F.cross_entropy(ethnicity_out, y_ethnicity)
+    total_loss = loss_age + loss_sex + loss_ethnicity
+    return total_loss
+
 # Initialize model, optimizer, and loss functions
 model = EnhancedGNNModel(in_channels=node_features.size(1), hidden_channels=64, out_channels_age=21, out_channels_sex=2, out_channels_ethnicity=5)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-loss_fn_age = CrossEntropyLoss()
-loss_fn_sex = CrossEntropyLoss()
-loss_fn_ethnicity = CrossEntropyLoss()
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
+scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
 
 # Training loop
 num_epochs = 10000
@@ -159,17 +156,15 @@ for epoch in range(num_epochs):
     sex_out = sex_out[:num_persons]
     ethnicity_out = ethnicity_out[:num_persons]
 
-    # Calculate loss for age, sex, and ethnicity
-    loss_age = loss_fn_age(age_out, y_age)
-    loss_sex = loss_fn_sex(sex_out, y_sex)
-    loss_ethnicity = loss_fn_ethnicity(ethnicity_out, y_ethnicity)
+    print(sex_out)
 
-    # Total loss
-    loss = loss_age + loss_sex + loss_ethnicity
+    # Calculate loss 
+    loss = custom_loss_function(age_out, sex_out, ethnicity_out, y_age, y_sex, y_ethnicity)
 
     # Backward pass and optimization
     loss.backward()
     optimizer.step()
+    scheduler.step()
 
     # Calculate accuracy
     with torch.no_grad():
