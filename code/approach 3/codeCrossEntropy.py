@@ -6,6 +6,9 @@ import torch.nn.functional as F
 from torch_geometric.data import Data
 from torch_geometric.nn import SAGEConv, BatchNorm
 
+# show full length tensor
+torch.set_printoptions(profile="full")
+
 # Load the data from individual tables
 current_dir = os.path.dirname(os.path.abspath(__file__))
 age_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/individual/Age_5yrs.csv'))
@@ -21,6 +24,17 @@ age_df = age_df[age_df['geography code'].isin(oxford_areas)]
 sex_df = sex_df[sex_df['geography code'].isin(oxford_areas)]
 ethnicity_df = ethnicity_df[ethnicity_df['geography code'].isin(oxford_areas)]
 ethnic_by_sex_by_age_df = ethnic_by_sex_by_age_df[ethnic_by_sex_by_age_df['geography code'].isin(oxford_areas)]
+
+
+df = ethnic_by_sex_by_age_df
+#drop the geography code and total columns
+df = df.drop(columns=['geography code', 'total'])
+# iterate and convert to dictionary
+observed_counts = {}
+for index, row in df.iterrows():
+    for col in df.columns:
+        observed_counts[col] = row[col]
+
 
 # Define the age groups, sex categories, and ethnicity categories
 age_groups = ['0_4', '5_7', '8_9', '10_14', '15', '16_17', '18_19', '20_24', '25_29', '30_34', '35_39', '40_44', '45_49', '50_54', '55_59', '60_64', '65_69', '70_74', '75_79', '80_84', '85+']
@@ -63,7 +77,7 @@ def generate_edge_index(num_persons):
         age_category = random.choice(range(age_start_idx, sex_start_idx))
         sex_category = random.choice(range(sex_start_idx, ethnicity_start_idx))
         ethnicity_category = random.choice(range(ethnicity_start_idx, ethnicity_start_idx + len(ethnicity_categories)))
-        print(age_category)
+        # print(age_category)
         edge_index.append([i, age_category])
         edge_index.append([i, sex_category])
         edge_index.append([i, ethnicity_category])
@@ -81,20 +95,29 @@ y_age = torch.zeros(num_persons, dtype=torch.long)
 y_sex = torch.zeros(num_persons, dtype=torch.long)
 y_ethnicity = torch.zeros(num_persons, dtype=torch.long)
 
-# Populate target tensors based on the cross table
 person_idx = 0
-for _, row in ethnic_by_sex_by_age_df.iterrows():
-    for age in age_groups:
-        for sex in sex_categories:
-            for ethnicity in ethnicity_categories:
-                col_name = f'{sex} {age} {ethnicity}'
-                count = int(row.get(col_name, 0))
-                for _ in range(count):
-                    if person_idx < num_persons:
-                        y_age[person_idx] = age_map.get(age, -1)
-                        y_sex[person_idx] = sex_map.get(sex, -1)
-                        y_ethnicity[person_idx] = ethnicity_map.get(ethnicity, -1)
-                        person_idx += 1
+for key, count in observed_counts.items():
+    sex, age, ethnicity = key.split(' ')
+    for _ in range(count):
+        y_age[person_idx] = age_map[age]
+        y_sex[person_idx] = sex_map[sex]
+        y_ethnicity[person_idx] = ethnicity_map[ethnicity]
+        person_idx += 1
+
+# # Populate target tensors based on the cross table
+# person_idx = 0
+# for _, row in ethnic_by_sex_by_age_df.iterrows():
+#     for age in age_groups:
+#         for sex in sex_categories:
+#             for ethnicity in ethnicity_categories:
+#                 col_name = f'{sex} {age} {ethnicity}'
+#                 count = int(row.get(col_name, 0))
+#                 for _ in range(count):
+#                     if person_idx < num_persons:
+#                         y_age[person_idx] = age_map.get(age, -1)
+#                         y_sex[person_idx] = sex_map.get(sex, -1)
+#                         y_ethnicity[person_idx] = ethnicity_map.get(ethnicity, -1)
+#                         person_idx += 1
 
 # Define the enhanced GNN model using GraphSAGE layers
 class EnhancedGNNModel(torch.nn.Module):
@@ -133,6 +156,9 @@ class EnhancedGNNModel(torch.nn.Module):
 
 # Custom loss function
 def custom_loss_function(age_out, sex_out, ethnicity_out, y_age, y_sex, y_ethnicity):
+    age_pred = age_out.argmax(dim=1)
+    sex_pred = sex_out.argmax(dim=1)
+    ethnicity_pred = ethnicity_out.argmax(dim=1)
     loss_age = F.cross_entropy(age_out, y_age)
     loss_sex = F.cross_entropy(sex_out, y_sex)
     loss_ethnicity = F.cross_entropy(ethnicity_out, y_ethnicity)
@@ -140,12 +166,12 @@ def custom_loss_function(age_out, sex_out, ethnicity_out, y_age, y_sex, y_ethnic
     return total_loss
 
 # Initialize model, optimizer, and loss functions
-model = EnhancedGNNModel(in_channels=node_features.size(1), hidden_channels=64, out_channels_age=21, out_channels_sex=2, out_channels_ethnicity=5)
+model = EnhancedGNNModel(in_channels=node_features.size(1), hidden_channels=256, out_channels_age=21, out_channels_sex=2, out_channels_ethnicity=5)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
 
 # Training loop
-num_epochs = 10000
+num_epochs = 100
 for epoch in range(num_epochs):
     model.train()  # Set model to training mode
     optimizer.zero_grad()  # Clear gradients
@@ -156,9 +182,9 @@ for epoch in range(num_epochs):
     sex_out = sex_out[:num_persons]
     ethnicity_out = ethnicity_out[:num_persons]
 
-    print(sex_out)
+    # print(sex_out)
 
-    # Calculate loss 
+    # Calculate loss
     loss = custom_loss_function(age_out, sex_out, ethnicity_out, y_age, y_sex, y_ethnicity)
 
     # Backward pass and optimization
@@ -181,7 +207,7 @@ for epoch in range(num_epochs):
         net_accuracy = ((age_pred == y_age) & (sex_pred == y_sex) & (ethnicity_pred == y_ethnicity)).sum().item() / num_persons
 
     # Print metrics every 10 epochs
-    if epoch % 100 == 0:
+    if epoch % 10 == 0:
         print(f'Epoch {epoch}, Loss: {loss.item()}, Age Accuracy: {age_accuracy:.4f}, Sex Accuracy: {sex_accuracy:.4f}, Ethnicity Accuracy: {ethnicity_accuracy:.4f}, Net Accuracy: {net_accuracy:.4f}')
 
 # Get the final predictions after training
@@ -189,7 +215,7 @@ model.eval()  # Set model to evaluation mode
 with torch.no_grad():
     age_out, sex_out, ethnicity_out = model(data)
     age_pred = age_out[:num_persons].argmax(dim=1)
-    sex_pred = sex_out[:num_persons].argmax(dim=1) 
+    sex_pred = sex_out[:num_persons].argmax(dim=1)
     ethnicity_pred = ethnicity_out[:num_persons].argmax(dim=1)
 
 # Calculate observed counts
@@ -218,10 +244,10 @@ comparison_df = pd.DataFrame({
     "Predicted": [predicted_counts[key] for key in observed_counts.keys()]
 })
 
-# Save the comparison DataFrame to a CSV file
-output_path = os.path.join(current_dir, 'comparison_results.csv')
-comparison_df.to_csv(output_path, index=False)
-
-# Print the comparison DataFrame
-print("Comparison results saved to:", output_path)
-print(comparison_df)
+# # Save the comparison DataFrame to a CSV file
+# output_path = os.path.join(current_dir, 'comparison_results.csv')
+# comparison_df.to_csv(output_path, index=False)
+#
+# # Print the comparison DataFrame
+# print("Comparison results saved to:", output_path)
+# print(comparison_df)
