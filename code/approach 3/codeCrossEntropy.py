@@ -95,29 +95,36 @@ y_age = torch.zeros(num_persons, dtype=torch.long)
 y_sex = torch.zeros(num_persons, dtype=torch.long)
 y_ethnicity = torch.zeros(num_persons, dtype=torch.long)
 
-person_idx = 0
-for key, count in observed_counts.items():
-    sex, age, ethnicity = key.split(' ')
-    for _ in range(count):
-        y_age[person_idx] = age_map[age]
-        y_sex[person_idx] = sex_map[sex]
-        y_ethnicity[person_idx] = ethnicity_map[ethnicity]
-        person_idx += 1
-
-# # Populate target tensors based on the cross table
 # person_idx = 0
-# for _, row in ethnic_by_sex_by_age_df.iterrows():
-#     for age in age_groups:
-#         for sex in sex_categories:
-#             for ethnicity in ethnicity_categories:
-#                 col_name = f'{sex} {age} {ethnicity}'
-#                 count = int(row.get(col_name, 0))
-#                 for _ in range(count):
-#                     if person_idx < num_persons:
-#                         y_age[person_idx] = age_map.get(age, -1)
-#                         y_sex[person_idx] = sex_map.get(sex, -1)
-#                         y_ethnicity[person_idx] = ethnicity_map.get(ethnicity, -1)
-#                         person_idx += 1
+# for key, count in observed_counts.items():
+#     sex, age, ethnicity = key.split(' ')
+#     for _ in range(count):
+#         y_age[person_idx] = age_map[age]
+#         y_sex[person_idx] = sex_map[sex]
+#         y_ethnicity[person_idx] = ethnicity_map[ethnicity]
+#         person_idx += 1
+
+
+# Initialize target tensors
+# y_age_2 = torch.zeros(num_persons, dtype=torch.long)
+# y_sex_2 = torch.zeros(num_persons, dtype=torch.long)
+# y_ethnicity_2 = torch.zeros(num_persons, dtype=torch.long)
+
+# Populate target tensors based on the cross table
+person_idx = 0
+for _, row in ethnic_by_sex_by_age_df.iterrows():
+    for age in age_groups:
+        for sex in sex_categories:
+            for ethnicity in ethnicity_categories:
+                col_name = f'{sex} {age} {ethnicity}'
+                count = int(row.get(col_name, 0))
+                for _ in range(count):
+                    if person_idx < num_persons:
+                        y_age[person_idx] = age_map.get(age, -1)
+                        y_sex[person_idx] = sex_map.get(sex, -1)
+                        y_ethnicity[person_idx] = ethnicity_map.get(ethnicity, -1)
+                        person_idx += 1
+
 
 # Define the enhanced GNN model using GraphSAGE layers
 class EnhancedGNNModel(torch.nn.Module):
@@ -168,10 +175,10 @@ def custom_loss_function(age_out, sex_out, ethnicity_out, y_age, y_sex, y_ethnic
 # Initialize model, optimizer, and loss functions
 model = EnhancedGNNModel(in_channels=node_features.size(1), hidden_channels=256, out_channels_age=21, out_channels_sex=2, out_channels_ethnicity=5)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
+# scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.5)
 
 # Training loop
-num_epochs = 100
+num_epochs = 2000
 for epoch in range(num_epochs):
     model.train()  # Set model to training mode
     optimizer.zero_grad()  # Clear gradients
@@ -190,7 +197,7 @@ for epoch in range(num_epochs):
     # Backward pass and optimization
     loss.backward()
     optimizer.step()
-    scheduler.step()
+    # scheduler.step()
 
     # Calculate accuracy
     with torch.no_grad():
