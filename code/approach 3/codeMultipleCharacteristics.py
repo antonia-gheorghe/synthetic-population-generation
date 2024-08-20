@@ -136,14 +136,14 @@ targets.append(
 )
 targets.append(
     (
-        ('sex', 'age', 'religion'), 
-        get_target_tensors(religion_by_sex_by_age_df, sex_categories, sex_map, age_groups, age_map, religion_categories, religion_map)
+        ('sex', 'age', 'marital'), 
+        get_target_tensors(marital_by_sex_by_age_df, sex_categories, sex_map, age_groups, age_map, marital_categories, marital_map)
     )
 )
 targets.append(
     (
-        ('sex', 'age', 'marital'), 
-        get_target_tensors(marital_by_sex_by_age_df, sex_categories, sex_map, age_groups, age_map, marital_categories, marital_map)
+        ('sex', 'age', 'religion'), 
+        get_target_tensors(religion_by_sex_by_age_df, sex_categories, sex_map, age_groups, age_map, religion_categories, religion_map)
     )
 )
 
@@ -204,8 +204,9 @@ def custom_loss_function(first_out, second_out, third_out, y_first, y_second, y_
     return total_loss
 
 # Initialize model, optimizer, and loss functions
-model = EnhancedGNNModel(in_channels=node_features.size(1), hidden_channels=256, out_channels_age=21, out_channels_sex=2, out_channels_ethnicity=5, out_channels_religion=9, out_channels_marital=6).to(device)
+model = EnhancedGNNModel(in_channels=node_features.size(1), hidden_channels=512, out_channels_age=21, out_channels_sex=2, out_channels_ethnicity=5, out_channels_religion=9, out_channels_marital=6).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+# weight_decay=5e-4
 
 # Training loop
 num_epochs = 2500
@@ -255,50 +256,68 @@ for epoch in range(num_epochs):
                 print(f'    Net accuracy: {net_accuracy:.4f}')
             print('-------------------------------------')
 
-# # Get the final predictions after training
-# model.eval()  # Set model to evaluation mode
-# with torch.no_grad():
-#     age_out, sex_out, ethnicity_out, religion_out = model(data)
-#     age_pred = age_out[:num_persons].argmax(dim=1)
-#     sex_pred = sex_out[:num_persons].argmax(dim=1)
-#     ethnicity_pred = ethnicity_out[:num_persons].argmax(dim=1)
-#     religion_pred = religion_out[:num_persons].argmax(dim=1)
+# Get the final predictions after training
+model.eval()  # Set model to evaluation mode
+with torch.no_grad():
+    age_out, sex_out, ethnicity_out, religion_out, marital_out = model(data)
+    age_pred = age_out[:num_persons].argmax(dim=1)
+    sex_pred = sex_out[:num_persons].argmax(dim=1)
+    ethnicity_pred = ethnicity_out[:num_persons].argmax(dim=1)
+    religion_pred = religion_out[:num_persons].argmax(dim=1)
+    marital_pred = marital_out[:num_persons].argmax(dim=1)
 
-# # Calculate observed counts
-# age_sex_ethnicity_counts = {}
-# for age in age_groups:
-#     for sex in sex_categories:
-#         for ethnicity in ethnicity_categories:
-#             key = f"{age}-{sex}-{ethnicity}"
-#             count = int(ethnic_by_sex_by_age_df[f"{sex} {age} {ethnicity}"].sum())
-#             age_sex_ethnicity_counts[key] = count
+# Calculate observed counts
+age_sex_ethnicity_counts = {}
+for age in age_groups:
+    for sex in sex_categories:
+        for ethnicity in ethnicity_categories:
+            key = f"{age}-{sex}-{ethnicity}"
+            count = int(ethnic_by_sex_by_age_df[f"{sex} {age} {ethnicity}"].sum())
+            age_sex_ethnicity_counts[key] = count
 
-# age_sex_religion_counts = {}
-# for age in age_groups:
-#     for sex in sex_categories:
-#         for religion in religion_categories:
-#             key = f"{age}-{sex}-{religion}"
-#             count = int(religion_by_sex_by_age_df[f"{sex} {age} {religion}"].sum())
-#             age_sex_religion_counts[key] = count
+age_sex_religion_counts = {}
+for age in age_groups:
+    for sex in sex_categories:
+        for religion in religion_categories:
+            key = f"{age}-{sex}-{religion}"
+            count = int(religion_by_sex_by_age_df[f"{sex} {age} {religion}"].sum())
+            age_sex_religion_counts[key] = count
 
-# # Calculate predicted counts
-# predicted_counts = {}
-# for i in range(num_persons):
-#     age = age_groups[age_pred[i]]
-#     sex = sex_categories[sex_pred[i]]
-#     ethnicity = ethnicity_categories[ethnicity_pred[i]]
-#     religion = religion_categories[religion_pred[i]]
-#     key = f"{age}-{sex}-{ethnicity}-{religion}"
-#     if key in predicted_counts:
-#         predicted_counts[key] += 1
-#     else:
-#         predicted_counts[key] = 1
 
-# # Create a DataFrame for comparison
+age_sex_marital_counts = {}
+for age in age_groups:
+    for sex in sex_categories:
+        for marital in marital_categories:
+            key = f"{age}-{sex}-{marital}"
+            count = int(marital_by_sex_by_age_df[f"{sex} {age} {marital}"].sum())
+            age_sex_marital_counts[key] = count
+
+# Calculate predicted counts
+predicted_counts = {}
+for i in range(num_persons):
+    age = age_groups[age_pred[i]]
+    sex = sex_categories[sex_pred[i]]
+    ethnicity = ethnicity_categories[ethnicity_pred[i]]
+    religion = religion_categories[religion_pred[i]]
+    marital = marital_categories[marital_pred[i]]
+    key = f"{age}-{sex}-{ethnicity}-{religion}-{marital}"
+    if key in predicted_counts:
+        predicted_counts[key] += 1
+    else:
+        predicted_counts[key] = 1
+
+# Create a DataFrame for comparison
+# print(age_sex_ethnicity_counts.keys())
+# print(age_sex_religion_counts.keys())
+# print(age_sex_marital_counts.keys())
+# print(predicted_counts.keys())
+
+
 # comparison_df = pd.DataFrame({
 #     "age_sex_ethnicity_counts": list(age_sex_ethnicity_counts.keys()),
 #     "age_sex_religion_counts": list(age_sex_religion_counts.keys()),
-#     "age_sex_ethnicity_religion_counts": list(predicted_counts.keys()),
+#     "age_sex_marital_counts": list(age_sex_marital_counts.keys()),
+#     "age_sex_ethnicity_religion_marital_counts": list(predicted_counts.keys()),
 # })
 
 # # Save the comparison DataFrame to a CSV file
