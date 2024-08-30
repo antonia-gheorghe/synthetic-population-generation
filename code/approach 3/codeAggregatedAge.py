@@ -54,7 +54,7 @@ religion_by_sex_by_age_df = pd.read_csv(os.path.join(current_dir, '../../data/pr
 marital_by_sex_by_age_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/crosstables/marital_by_sex_by_age.csv'))
 
 # Define the Oxford areas
-oxford_areas = ['E02005921']
+oxford_areas = ['E02005924']
 
 # Filter the DataFrame for the specified Oxford areas
 age_df = age_df[age_df['geography code'].isin(oxford_areas)]
@@ -64,6 +64,15 @@ religion_df = religion_df[religion_df['geography code'].isin(oxford_areas)]
 ethnic_by_sex_by_age_df = ethnic_by_sex_by_age_df[ethnic_by_sex_by_age_df['geography code'].isin(oxford_areas)]
 religion_by_sex_by_age_df = religion_by_sex_by_age_df[religion_by_sex_by_age_df['geography code'].isin(oxford_areas)]
 marital_by_sex_by_age_df = marital_by_sex_by_age_df[marital_by_sex_by_age_df['geography code'].isin(oxford_areas)]
+
+# ages = []
+# for name in marital_by_sex_by_age_df.columns.to_list():
+#     if name != 'geography code' and name != 'total':
+#         x = name.split()
+#         age = x[1]
+#         ages.append(age)
+
+# print(set(ages))
 
 # Define the new columns for age by summing the appropriate age columns
 child_ages = ['0_4', '5_7', '8_9', '10_14', '15', '16_17']
@@ -77,8 +86,6 @@ age_df['elderly'] = age_df[elderly_ages].sum(axis=1)
 age_df = age_df.drop(columns=['0_4', '5_7', '8_9', '10_14', '15', '16_17',
                               '18_19', '20_24', '25_29', '30_34', '35_39', '40_44', '45_49', '50_54', '55_59',
                               '60_64', '65_69', '70_74', '75_79', '80_84', '85+'])
-
-print(age_df)
 
 # Define the age groups, sex categories, and ethnicity categories
 # age_groups = ['0_4', '5_7', '8_9', '10_14', '15', '16_17', '18_19', '20_24', '25_29', '30_34', '35_39', '40_44', '45_49', '50_54', '55_59', '60_64', '65_69', '70_74', '75_79', '80_84', '85+']
@@ -105,6 +112,18 @@ def aggregate_age_groups(df, child_ages, adult_ages, elderly_ages, sex_categorie
 ethnic_by_sex_by_age_df = aggregate_age_groups(ethnic_by_sex_by_age_df, child_ages, adult_ages, elderly_ages, sex_categories, ethnicity_categories)
 religion_by_sex_by_age_df = aggregate_age_groups(religion_by_sex_by_age_df, child_ages, adult_ages, elderly_ages, sex_categories, religion_categories)
 marital_by_sex_by_age_df = aggregate_age_groups(marital_by_sex_by_age_df, child_ages, adult_ages, elderly_ages, sex_categories, marital_categories)
+
+print(ethnic_by_sex_by_age_df.sum(axis=1))
+print(religion_by_sex_by_age_df.sum(axis=1))
+print(marital_by_sex_by_age_df.sum(axis=1))
+
+
+print(ethnic_by_sex_by_age_df)
+
+
+# print("Ethnicity cross table sum: ", sum([115,0,0,1,0,77,0,0,0,0,65,1,0,0,0,143,0,0,0,0,23,1,0,0,0,47,1,0,0,0,40,0,0,0,0,97,0,0,0,0,87,0,0,0,0,70,1,0,0,0,117,1,1,0,0,199,0,0,0,0,232,0,0,0,0,220,0,1,0,0,199,0,0,0,0,234,1,0,0,0,183,0,0,0,0,130,0,0,0,0,115,0,0,0,0,70,0,0,0,0,46,0,0,0,0,99,0,0,0,0,79,0,0,0,1,55,0,0,0,0,135,1,0,1,0,23,0,0,0,0,46,0,0,0,0,31,1,0,0,0,74,0,0,0,1,75,0,0,0,0,98,0,0,0,0,142,0,0,2,0,198,1,0,0,0,227,0,1,2,0,233,0,0,0,0,200,0,0,0,0,230,1,0,0,0,192,0,0,0,0,126,1,0,0,0,108,0,0,0,0,87,1,0,0,0,113,0,1,0,0]))
+# print("Religion cross table sum: ", sum([88,0,0,0,0,0,0,21,17,64,0,0,2,0,0,0,16,3,36,0,0,0,0,0,0,26,4,102,0,0,1,0,0,0,32,14,18,0,0,0,0,0,0,6,1,29,0,0,0,0,0,0,17,6,22,0,0,0,0,0,0,14,4,58,1,0,0,0,0,1,35,7,41,1,0,0,0,0,0,42,7,48,0,0,0,1,0,0,24,8,76,3,0,0,1,0,0,41,7,111,0,0,1,0,0,1,73,18,153,0,0,0,0,0,2,72,13,156,2,0,1,1,0,0,56,16,135,0,0,0,0,0,3,48,17,160,1,0,1,0,0,0,47,34,143,0,1,0,0,0,1,29,15,103,0,0,1,0,0,0,25,6,100,0,0,0,0,0,1,14,6,60,0,0,0,0,0,0,4,7,39,0,0,0,0,0,0,4,5,59,0,0,0,1,0,0,23,20,61,0,1,0,1,0,0,13,7,40,0,0,1,0,0,0,13,3,89,0,0,0,1,0,0,32,15,17,0,0,0,0,0,0,6,2,30,0,0,0,0,0,0,11,5,23,0,0,0,1,0,0,7,2,48,0,0,0,1,0,0,24,7,48,0,0,0,0,0,0,26,7,70,1,0,1,0,0,0,30,5,105,4,0,2,0,0,1,37,10,148,4,1,1,1,0,0,44,10,173,1,0,1,0,0,1,47,20,182,1,0,1,0,0,1,40,20,166,1,1,0,0,0,2,29,13,181,1,0,1,0,0,1,31,24,162,0,0,0,0,0,0,17,15,111,0,0,0,0,0,0,13,7,94,0,0,0,0,0,0,9,7,84,0,0,0,0,0,0,3,6,104,0,0,0,0,0,0,3,9]))
+# print("Marital cross table sum: ", sum([0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,52,0,0,0,0,0,46,0,0,0,0,0,40,0,0,0,0,0,33,0,0,0,0,0,101,0,0,0,1,0,77,3,0,0,0,0,77,13,1,0,0,0,65,16,0,0,0,0,50,28,1,1,0,1,44,58,0,1,4,0,39,79,3,1,5,1,31,113,0,9,6,0,38,140,1,6,19,0,27,145,1,10,21,5,30,171,2,9,28,0,25,175,3,4,32,4,23,174,1,4,27,3,14,178,2,8,38,5,17,155,1,5,23,2,7,163,0,3,27,12,9,190,2,5,33,4,11,190,0,5,21,12,16,146,0,2,15,10,11,138,0,6,16,23,6,114,0,0,12,3,1,88,0,1,8,33,5,93,2,1,5,15,0,64,0,0,8,38,2,53,1,1,1,13,4,25,0,0,3,61,1,25,1,0,1,20,4,24,0,0,1,87]))
 
 # Encode the categories to indices
 age_map = {category: i for i, category in enumerate(age_groups)}
@@ -189,17 +208,18 @@ targets.append(
     )
 )
 
-print(targets[0][1][1].tolist().count(0))
-print(targets[0][1][1].tolist().count(1))
-print(targets[0][1][1].tolist().count(2))
-
-print(targets[1][1][1].tolist().count(0))
-print(targets[1][1][1].tolist().count(1))
-print(targets[1][1][1].tolist().count(2))
-
-print(targets[2][1][1].tolist().count(0))
-print(targets[2][1][1].tolist().count(1))
-print(targets[2][1][1].tolist().count(2))
+# print(targets[0][1][1].tolist().count(0))
+# print(targets[0][1][1].tolist().count(1))
+# print(targets[0][1][1].tolist().count(2))
+# print()
+# print(targets[1][1][1].tolist().count(0))
+# print(targets[1][1][1].tolist().count(1))
+# print(targets[1][1][1].tolist().count(2))
+# print()
+# print(targets[2][1][1].tolist().count(0))
+# print(targets[2][1][1].tolist().count(1))
+# print(targets[2][1][1].tolist().count(2))
+# print()
 
 # Define the enhanced GNN model using GraphSAGE layers
 class EnhancedGNNModel(torch.nn.Module):
@@ -264,7 +284,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
 
 
 # Training loop
-num_epochs = 2500
+num_epochs = 3000
 for epoch in range(num_epochs):
     model.train()  # Set model to training mode
     optimizer.zero_grad()  # Clear gradients
@@ -303,6 +323,13 @@ for epoch in range(num_epochs):
                     pred = out[targets[i][0][j]].argmax(dim=1)
                     accuracy = (pred == targets[i][1][j]).sum().item() / num_persons
                     print(f'    Accuracy for {targets[i][0][j]}: {accuracy:.4f}')
+                    # if j ==1:
+                    #     print(pred.tolist().count(0),  targets[i][1][j].tolist().count(0))
+                    #     print()
+                    #     print(pred.tolist().count(1),  targets[i][1][j].tolist().count(1))
+                    #     print()
+                    #     print(pred.tolist().count(2),  targets[i][1][j].tolist().count(2))
+                    #     print()
                 
                 pred_1 = out[targets[i][0][0]].argmax(dim=1)
                 pred_2 = out[targets[i][0][1]].argmax(dim=1)
@@ -382,3 +409,32 @@ for i in range(num_persons):
 # # Print the comparison DataFrame
 # print("Comparison results saved to:", output_path)
 # print(comparison_df)
+
+
+# After training the individual GNN model
+with torch.no_grad():
+    age_out, sex_out, ethnicity_out, religion_out, marital_out = model(data)
+
+# The predictions are logits; convert them to categorical labels
+age_pred = age_out.argmax(dim=1)
+sex_pred = sex_out.argmax(dim=1)
+ethnicity_pred = ethnicity_out.argmax(dim=1)
+religion_pred = religion_out.argmax(dim=1)
+marital_pred = marital_out.argmax(dim=1)
+
+# Combine individual features into a single tensor
+individual_nodes = torch.cat([
+    age_pred.unsqueeze(1), 
+    sex_pred.unsqueeze(1), 
+    ethnicity_pred.unsqueeze(1), 
+    religion_pred.unsqueeze(1),
+    marital_pred.unsqueeze(1)
+], dim=1).float()
+
+# Define the file path where you want to save the tensor
+file_path = current_dir + "/person_nodes.pt"
+
+# Save the tensor to the file
+torch.save(individual_nodes, file_path)
+
+print(f"Person nodes tensor saved to {file_path}")

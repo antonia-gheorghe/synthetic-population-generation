@@ -46,7 +46,7 @@ religion_by_sex_by_age_df = pd.read_csv(os.path.join(current_dir, '../../data/pr
 marital_by_sex_by_age_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/crosstables/marital_by_sex_by_age.csv'))
 
 # Define the Oxford areas
-oxford_areas = ['E02005921']
+oxford_areas = ['E02005924']
 
 # Filter the DataFrame for the specified Oxford areas
 age_df = age_df[age_df['geography code'].isin(oxford_areas)]
@@ -209,7 +209,7 @@ optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 # weight_decay=5e-4
 
 # Training loop
-num_epochs = 2500
+num_epochs = 7500
 for epoch in range(num_epochs):
     model.train()  # Set model to training mode
     optimizer.zero_grad()  # Clear gradients
