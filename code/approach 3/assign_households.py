@@ -94,9 +94,9 @@ print(num_persons)
 num_households = household_sizes.size(0)
 print(num_households)
 
-# Define the columns for religion and ethnicity (adjust as per your data structure)
-religion_col = 2
-ethnicity_col = 3
+# Define the columns for religion and ethnicity 
+religion_col_persons, religion_col_households = 2, 2
+ethnicity_col_persons, ethnicity_col_households = 3, 1
 
 # Check if the edge_index already exists
 edge_index_file_path = os.path.join(current_dir, "edge_index.pt")
@@ -113,7 +113,7 @@ else:
             print(i)
         for j in range(i + 1, num_persons):  # Avoid duplicate edges by starting at i + 1
             # Check if both persons have the same religion and ethnicity
-            if person_nodes[i, religion_col] == person_nodes[j, religion_col] and person_nodes[i, ethnicity_col] == person_nodes[j, ethnicity_col]:
+            if person_nodes[i, religion_col_persons] == person_nodes[j, religion_col_persons] and person_nodes[i, ethnicity_col_persons] == person_nodes[j, ethnicity_col_persons]:
                 edge_index[0].append(i)
                 edge_index[1].append(j)
                 # Since it's an undirected graph, add both directions
@@ -133,18 +133,35 @@ else:
 in_channels = person_nodes.size(1)  # Assuming 5 characteristics per person
 hidden_channels = 32
 model = HouseholdAssignmentGNN(in_channels, hidden_channels, num_households)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 
 # Step 5: Define the compute_loss function
-def compute_loss(assignments, household_sizes):
+def compute_loss(assignments, household_sizes, person_nodes, household_nodes, penalty_weight=1.0):
+    # Calculate household size mismatch loss (MSE)
     household_counts = assignments.sum(dim=0)  # Sum the soft assignments across households
     size_loss = F.mse_loss(household_counts.float(), household_sizes.float())  # MSE loss
-    return size_loss
+
+    # Calculate penalty for mismatches in ethnicity and religion
+    mismatch_penalty = 0.0
+    for person_idx, household_idx in enumerate(torch.argmax(assignments, dim=1)):
+        person_religion = person_nodes[person_idx, religion_col_persons]
+        person_ethnicity = person_nodes[person_idx, ethnicity_col_persons]
+        household_religion = household_nodes[household_idx, religion_col_households]
+        household_ethnicity = household_nodes[household_idx, ethnicity_col_households]
+        
+        # Penalize if religion or ethnicity doesn't match
+        if person_religion != household_religion or person_ethnicity != household_ethnicity:
+            mismatch_penalty += 1.0
+    
+    # Scale the penalty by the penalty weight
+    total_loss = size_loss + penalty_weight * mismatch_penalty
+    return total_loss
 
 # Step 6: Training loop
 epochs = 100
 tau = 0.05
-  # Temperature for Gumbel-Softmax
+penalty_weight = 0.1  # Weight of the mismatch penalty in the loss function
+
 for epoch in range(epochs):
     optimizer.zero_grad()
     
@@ -155,7 +172,7 @@ for epoch in range(epochs):
     assignments = gumbel_softmax(logits, tau=tau, hard=False)  # Shape: (num_persons, num_households)
     
     # Calculate the loss using the household sizes as targets
-    loss = compute_loss(assignments, household_sizes)
+    loss = compute_loss(assignments, household_sizes, person_nodes, household_nodes, penalty_weight)
     loss.backward()
     optimizer.step()
     
@@ -166,33 +183,49 @@ for epoch in range(epochs):
 final_assignments = torch.argmax(assignments, dim=1)  # Get final discrete assignments
 # print(final_assignments)
 
-def calculate_size_distribution_accuracy(assignments, household_sizes):
-    # Step 1: Calculate the predicted sizes (how many people in each household)
-    predicted_counts = torch.zeros_like(household_sizes)  # Start with zeros for each household
-    for household_idx in assignments:
-        predicted_counts[household_idx] += 1  # Increment for each assignment
+def calculate_individual_compliance_accuracy(assignments, person_nodes, household_nodes):
+    # Define the columns for religion and ethnicity in persons and households
+    religion_col_persons, religion_col_households = 2, 2
+    ethnicity_col_persons, ethnicity_col_households = 3, 1
+
+    total_people = assignments.size(0)
     
-    # Step 2: Clamp both predicted and actual sizes to a maximum of 8
-    predicted_counts_clamped = torch.clamp(predicted_counts, min=1, max=8)
-    household_sizes_clamped = torch.clamp(household_sizes, min=1, max=8)
+    correct_religion_assignments = 0
+    correct_ethnicity_assignments = 0
 
-    # Step 3: Calculate bincount of the clamped predicted and actual sizes
-    max_size = 8  # Since we clamped everything above size 8, the max size is now 8
-    predicted_distribution = torch.bincount(predicted_counts_clamped, minlength=max_size).float()
-    actual_distribution = torch.bincount(household_sizes_clamped, minlength=max_size).float()
+    # Loop over each person and their assigned household
+    for person_idx, household_idx in enumerate(assignments):
+        household_idx = household_idx.item()  # Get the household assignment for the person
 
-    # Step 4: Calculate accuracy for each size
-    accuracies = torch.min(predicted_distribution, actual_distribution) / (actual_distribution + 1e-6)  # Avoid division by 0
-    overall_accuracy = accuracies.mean().item()  # Average accuracy across all household sizes
+        # Get the person's religion and ethnicity
+        person_religion = person_nodes[person_idx, religion_col_persons]
+        person_ethnicity = person_nodes[person_idx, ethnicity_col_persons]
 
-    # Step 5: Print comparison for visual verification
-    print("Household Size | Predicted Count | Actual Count | Accuracy")
-    for size in range(1, max_size + 1):
-        accuracy = accuracies[size].item()
-        print(f"Size {size:2d}:    {predicted_distribution[size]:.4f}            {actual_distribution[size]:.4f}         {accuracy:.4f}")
-    
-    print(f"Overall accuracy: {overall_accuracy:.4f}")
-    
-    return overall_accuracy
+        # Get the household's religion and ethnicity
+        household_religion = household_nodes[household_idx, religion_col_households]
+        household_ethnicity = household_nodes[household_idx, ethnicity_col_households]
 
-calculate_size_distribution_accuracy(final_assignments, household_sizes)
+        # Check if the person's religion matches the household's religion
+        if person_religion == household_religion:
+            correct_religion_assignments += 1
+
+        # Check if the person's ethnicity matches the household's ethnicity
+        if person_ethnicity == household_ethnicity:
+            correct_ethnicity_assignments += 1
+
+    # Calculate individual compliance accuracy for religion and ethnicity
+    religion_compliance = correct_religion_assignments / total_people
+    ethnicity_compliance = correct_ethnicity_assignments / total_people
+
+    # Print the results for visual feedback
+    print(f"Religion compliance accuracy (per person): {religion_compliance * 100:.2f}%")
+    print(f"Ethnicity compliance accuracy (per person): {ethnicity_compliance * 100:.2f}%")
+
+    return religion_compliance, ethnicity_compliance
+
+# Assuming `final_assignments` contains the assignments after training
+religion_compliance, ethnicity_compliance = calculate_individual_compliance_accuracy(
+    final_assignments,       # The household assignments predicted by the model
+    person_nodes,            # The tensor containing person features (including religion and ethnicity)
+    household_nodes          # The tensor containing household features (including religion and ethnicity)
+)
