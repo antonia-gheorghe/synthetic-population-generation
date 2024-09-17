@@ -1,12 +1,11 @@
 import os
 import pandas as pd
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
-from torch_geometric.nn import SAGEConv, BatchNorm
-from torch.nn import CrossEntropyLoss
+from torch_geometric.nn import SAGEConv, GraphNorm
 import random
+import json
 
 # Set display options permanently
 pd.set_option('display.max_rows', None)
@@ -30,7 +29,6 @@ substring_mapping = {
     'OH-Adult': '1H-nA',
 }
 
-
 # Set print options to display all elements of the tensor
 torch.set_printoptions(edgeitems=torch.inf)
 
@@ -41,8 +39,6 @@ def get_target_tensors(cross_table, hh_categories, hh_map, feature_categories, f
     # Populate target tensors based on the cross-table and categories
     household_idx = 0
 
-    # print(hh_categories)
-    # print(feature_categories)
     for _, row in cross_table.iterrows():
         for hh in hh_categories:
             for feature in feature_categories:
@@ -55,7 +51,6 @@ def get_target_tensors(cross_table, hh_categories, hh_map, feature_categories, f
                         y_hh[household_idx] = hh_map.get(hh, -1)
                         y_feature[household_idx] = feature_map.get(feature, -1)
                         household_idx += 1
-
 
     return y_hh, y_feature
 
@@ -72,7 +67,6 @@ oxford_areas = ['E02005924']
 
 ethnicity_categories = ['W0', 'M0', 'A0', 'B0', 'O0']
 religion_categories = ['C','B','H','J','M','S','OR','NR','NS']
-# hh_compositions = ['1PE','1PA','1FE','1FM','1FM-0C','1FM-1C','1FM-nC','1FM-nA','1FC','1FC-0C','1FC-1C','1FC-nC','1FC-nA','1FL','1FL-1C','1FL-nC','1FL-nA','1H-1C','1H-nC','1H-nS','1H-nE','1H-nA']
 
 # Filter the DataFrame for the specified Oxford areas
 ethnicity_df = ethnicity_df[ethnicity_df['geography code'].isin(oxford_areas)]
@@ -88,8 +82,6 @@ hhcomp_df['1H-2C'] = hhcomp_df['1H-1C'] + hhcomp_df['1H-nC']
 hhcomp_df.drop(columns=['1FM-1C', '1FM-nC', '1FC-1C', '1FC-nC', '1FL-1C', '1FL-nC', '1H-1C', '1H-nC', 'total', 'geography code'], inplace=True)
 hhcomp_df = hhcomp_df.drop(['1FM', '1FC', '1FL'], axis=1)
 hh_compositions = ['1PE','1PA','1FE','1FM-0C','1FM-2C', '1FM-nA','1FC-0C','1FC-2C','1FC-nA','1FL-nA','1FL-2C','1H-nS','1H-nE','1H-nA', '1H-2C']
-# print(hhcomp_df.columns)
-
 
 filtered_columns = [col for col in hhcomp_by_ethnicity_df.columns if any(substring in col for substring in ['geography code', 'total', 'W0', 'M0', 'A0', 'B0', 'O0'])]
 hhcomp_by_ethnicity_df = hhcomp_by_ethnicity_df[filtered_columns]
@@ -151,14 +143,6 @@ mapping_dict = {
 }
 hhcomp_by_religion_df.rename(columns=mapping_dict, inplace=True)
 
-print(hhcomp_by_ethnicity_df.sum(axis=1))
-print("--------------------")
-print(hhcomp_by_religion_df.sum(axis=1))
-print(hhcomp_df.sum(axis=1))
-
-# print(len(hhcomp_by_religion_df.columns))
-# print(len(hhcomp_by_ethnicity_df.columns))
-
 # Encode the categories to indices
 ethnicity_map = {category: i for i, category in enumerate(ethnicity_categories)}
 religion_map = {category: i for i, category in enumerate(religion_categories)}
@@ -166,8 +150,6 @@ hh_map = {category: i for i, category in enumerate(hh_compositions)}
 
 # Total number of households from the total column
 num_households = 4852
-# num_households = int(hhcomp_df.sum(axis=1))
-# print(num_households)
 
 # Create households nodes with unique IDs
 households_nodes = torch.arange(num_households).view(num_households, 1)
@@ -208,47 +190,74 @@ edge_index = generate_edge_index(num_households)
 # Create the data object for PyTorch Geometric
 data = Data(x=node_features, edge_index=edge_index)
 
-
 class EnhancedGNNModelHousehold(torch.nn.Module):
-    def __init__(self, in_channels, hidden_channels, out_channels_hh, out_channels_ethnicity, out_channels_religion):
+    def __init__(self, in_channels, hidden_channels, mlp_hidden_dim, out_channels_hh, out_channels_ethnicity, out_channels_religion):
         super(EnhancedGNNModelHousehold, self).__init__()
-        # Define the GraphSAGE layers for the model
+        
+        # GraphSAGE layers
         self.conv1 = SAGEConv(in_channels, hidden_channels)
         self.conv2 = SAGEConv(hidden_channels, hidden_channels)
         self.conv3 = SAGEConv(hidden_channels, hidden_channels)
         self.conv4 = SAGEConv(hidden_channels, hidden_channels)
-        self.batch_norm1 = BatchNorm(hidden_channels)
-        self.batch_norm2 = BatchNorm(hidden_channels)
-        self.batch_norm3 = BatchNorm(hidden_channels)
-        self.batch_norm4 = BatchNorm(hidden_channels)
+        
+        # Graph normalization layers
+        self.graph_norm1 = GraphNorm(hidden_channels)
+        self.graph_norm2 = GraphNorm(hidden_channels)
+        self.graph_norm3 = GraphNorm(hidden_channels)
+        self.graph_norm4 = GraphNorm(hidden_channels)
+        
+        # Dropout layer
         self.dropout = torch.nn.Dropout(0.5)
-        self.conv5_hh = SAGEConv(hidden_channels, out_channels_hh)  # Output for household composition
-        self.conv5_ethnicity = SAGEConv(hidden_channels, out_channels_ethnicity)  # Output for ethnicity
-        self.conv5_religion = SAGEConv(hidden_channels, out_channels_religion)  # Output for religion
+        
+        # MLP layers for each classification target
+        self.mlp_hh = torch.nn.Sequential(
+            torch.nn.Linear(hidden_channels, mlp_hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(mlp_hidden_dim, out_channels_hh)
+        )
+        
+        self.mlp_ethnicity = torch.nn.Sequential(
+            torch.nn.Linear(hidden_channels, mlp_hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(mlp_hidden_dim, out_channels_ethnicity)
+        )
+        
+        self.mlp_religion = torch.nn.Sequential(
+            torch.nn.Linear(hidden_channels, mlp_hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(mlp_hidden_dim, out_channels_religion)
+        )
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
+        
+        # Pass through GraphSAGE layers with GraphNorm
         x = self.conv1(x, edge_index)
-        x = self.batch_norm1(x)
+        x = self.graph_norm1(x)
         x = F.relu(x)
-        x = self.dropout(x)
+        # x = self.dropout(x)
+        
         x = self.conv2(x, edge_index)
-        x = self.batch_norm2(x)
+        x = self.graph_norm2(x)
         x = F.relu(x)
-        x = self.dropout(x)
+        # x = self.dropout(x)
+        
         x = self.conv3(x, edge_index)
-        x = self.batch_norm3(x)
+        x = self.graph_norm3(x)
         x = F.relu(x)
-        x = self.dropout(x)
+        # x = self.dropout(x)
+        
         x = self.conv4(x, edge_index)
-        x = self.batch_norm4(x)
+        x = self.graph_norm4(x)
         x = F.relu(x)
-        x = self.dropout(x)
-        hh_out = self.conv5_hh(x, edge_index)  # Household composition output
-        ethnicity_out = self.conv5_ethnicity(x, edge_index)  # Ethnicity output
-        religion_out = self.conv5_religion(x, edge_index)  # Religion output
+        # x = self.dropout(x)
+        
+        # Pass the node embeddings through the MLPs for final attribute predictions
+        hh_out = self.mlp_hh(x[:num_households])
+        ethnicity_out = self.mlp_ethnicity(x[:num_households])
+        religion_out = self.mlp_religion(x[:num_households])
+        
         return hh_out, ethnicity_out, religion_out
-
 
 targets = []
 targets.append(
@@ -268,22 +277,29 @@ targets.append(
 model = EnhancedGNNModelHousehold(
     in_channels=node_features.size(1), 
     hidden_channels=512, 
+    mlp_hidden_dim=256,
     out_channels_hh=len(hh_compositions), 
     out_channels_ethnicity=len(ethnicity_categories), 
     out_channels_religion=len(religion_categories)
 )
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
 # Custom loss function
 def custom_loss_function(hh_out, feature_out, y_hh, y_feature):
-    loss_hh = F.cross_entropy(hh_out, y_hh)
+    loss_hh = F.cross_entropy(hh_out, y_hh) / 2
     loss_feature = F.cross_entropy(feature_out, y_feature)
     total_loss = loss_hh + loss_feature
     return total_loss
 
+# Save loss and accuracy data as dictionaries
+loss_data = {}
+accuracy_data = {}
+
 # Training loop
-num_epochs = 3000
+num_epochs = 10000
 for epoch in range(num_epochs):
+    if epoch % 100 == 0: 
+        print(epoch)
     model.train()
     optimizer.zero_grad()
 
@@ -295,58 +311,113 @@ for epoch in range(num_epochs):
     out['ethnicity'] = ethnicity_out[:num_households]
     out['religion'] = religion_out[:num_households]
 
+    # Calculate loss
     loss = 0
     for i in range(len(targets)):
         loss += custom_loss_function(
             out[targets[i][0][0]], out[targets[i][0][1]],
             targets[i][1][0], targets[i][1][1]
         )
-
+    
     # Backward pass and optimization
     loss.backward()
     optimizer.step()
 
-    # Print metrics every 100 epochs
-    if epoch % 100 == 0:
-        print(f'Epoch {epoch}, Loss: {loss.item()}')
+    # Store loss and accuracy data for each epoch
+    loss_data[epoch] = loss.item()
+    accuracy_data[epoch] = {}
 
-        with torch.no_grad():
-            for i in range(len(targets)):
-                print(f'Accuracy for {targets[i][0][0]}, {targets[i][0][1]}:')
+    with torch.no_grad():
+        for i in range(len(targets)):
+            accuracy_data[epoch][f'{targets[i][0][0]}, {targets[i][0][1]}'] = {}
 
-                for j in range(2):
-                    pred = out[targets[i][0][j]].argmax(dim=1)
-                    accuracy = (pred == targets[i][1][j]).sum().item() / num_households
-                    print(f'    Accuracy for {targets[i][0][j]}: {accuracy:.4f}')
+            for j in range(2):
+                pred = out[targets[i][0][j]].argmax(dim=1)
+                accuracy = (pred == targets[i][1][j]).sum().item() / num_households
+                accuracy_data[epoch][f'{targets[i][0][0]}, {targets[i][0][1]}'][f'{targets[i][0][j]}'] = accuracy
 
-                # Calculate net accuracy (when both predictions are correct)
-                pred_1 = out[targets[i][0][0]].argmax(dim=1)
-                pred_2 = out[targets[i][0][1]].argmax(dim=1)
-                net_accuracy = ((pred_1 == targets[i][1][0]) & (pred_2 == targets[i][1][1])).sum().item() / num_households
-                print(f'    Net accuracy: {net_accuracy:.4f}')
-            print('-------------------------------------')
+            # Calculate net accuracy (when both predictions are correct)
+            pred_1 = out[targets[i][0][0]].argmax(dim=1)
+            pred_2 = out[targets[i][0][1]].argmax(dim=1)
+            net_accuracy = ((pred_1 == targets[i][1][0]) & (pred_2 == targets[i][1][1])).sum().item() / num_households
+            accuracy_data[epoch][f'{targets[i][0][0]}, {targets[i][0][1]}']['net'] = net_accuracy
 
+# Define paths for saving loss and accuracy data
+loss_data_path = os.path.join(current_dir, '../results/household/loss_data.json')
+accuracy_data_path = os.path.join(current_dir, '../results/household/accuracy_data.json')
 
-# After training the household GNN model
+# Save loss data
+with open(loss_data_path, 'w') as f:
+    json.dump(loss_data, f)
+
+# Save accuracy data
+with open(accuracy_data_path, 'w') as f:
+    json.dump(accuracy_data, f)
+
+print(f"Loss and accuracy data saved to {loss_data_path} and {accuracy_data_path}")
+# Get the final predictions after training
+# model.eval()  # Set model to evaluation mode
 with torch.no_grad():
     hh_out, ethnicity_out, religion_out = model(data)
+    hh_pred = hh_out[:num_households].argmax(dim=1)
+    ethnicity_pred = ethnicity_out[:num_households].argmax(dim=1)
+    religion_pred = religion_out[:num_households].argmax(dim=1)
 
-# The predictions are logits; convert them to categorical labels
-hh_pred = hh_out.argmax(dim=1)
-ethnicity_pred = ethnicity_out.argmax(dim=1)
-religion_pred = religion_out.argmax(dim=1)
 
-# Combine household features into a single tensor
+# Combine individual features into a single tensor
 household_nodes = torch.cat([
     hh_pred.unsqueeze(1), 
     ethnicity_pred.unsqueeze(1), 
-    religion_pred.unsqueeze(1)
+    religion_pred.unsqueeze(1),
 ], dim=1).float()
 
-# Define the file path where you want to save the tensor
-file_path = current_dir + "/household_nodes.pt"
-
 # Save the tensor to the file
-torch.save(household_nodes, file_path)
+torch.save(household_nodes, os.path.join(current_dir, '../results/household/household_nodes.pt'))
 
-print(f"Household nodes tensor saved to {file_path}")
+print(f"Person nodes tensor")
+
+# Calculate observed counts for household composition, ethnicity, and religion
+hh_ethnicity_counts = {}
+for hh in hh_compositions:
+    for ethnicity in ethnicity_categories:
+        key = f"{hh}-{ethnicity}"
+        count = int(hhcomp_by_ethnicity_df[f"{hh} {ethnicity}"].sum())
+        hh_ethnicity_counts[key] = count
+
+hh_religion_counts = {}
+for hh in hh_compositions:
+    for religion in religion_categories:
+        key = f"{hh}-{religion}"
+        count = int(hhcomp_by_religion_df[f"{hh} {religion}"].sum())
+        hh_religion_counts[key] = count
+
+# Calculate predicted counts for household composition, ethnicity, and religion
+predicted_counts = {}
+for hh in hh_compositions:
+    for ethnicity in ethnicity_categories:
+        for religion in religion_categories:
+            key = f"{hh}-{ethnicity}-{religion}"
+            predicted_counts[key] = 0
+
+for i in range(num_households):
+    hh = hh_compositions[hh_pred[i]]
+    ethnicity = ethnicity_categories[ethnicity_pred[i]]
+    religion = religion_categories[religion_pred[i]]
+    key = f"{hh}-{ethnicity}-{religion}"
+    predicted_counts[key] += 1
+
+# Prepare the data for saving
+counts_data = {
+    'hh_ethnicity_counts': hh_ethnicity_counts,
+    'hh_religion_counts': hh_religion_counts,
+    'hh_ethnicity_religion_counts': predicted_counts
+}
+
+# Define the output path for counts data
+counts_data_path = os.path.join(current_dir, '../results/household/counts.json')
+
+# Save counts data to JSON
+with open(counts_data_path, 'w') as f:
+    json.dump(counts_data, f)
+
+print(f"Counts data saved to {counts_data_path}")
