@@ -1,18 +1,17 @@
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import SAGEConv
-from torch_geometric.data import Data
 import os
 import random
-import pandas as pd 
+import pandas as pd
 
 # Set print options to display all elements of the tensor
 torch.set_printoptions(edgeitems=torch.inf)
 
 # Step 1: Load the tensors and household size data
 current_dir = os.path.dirname(os.path.abspath(__file__))
-persons_file_path = os.path.join(current_dir, "person_nodes.pt")
-households_file_path = os.path.join(current_dir, "household_nodes.pt")
+persons_file_path = os.path.join(current_dir, "../results/tensors/person_nodes.pt")
+households_file_path = os.path.join(current_dir, "../results/tensors/household_nodes.pt")
 hh_size_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/individual/HH_size.csv'))
 
 # Define the Oxford areas
@@ -29,7 +28,7 @@ hh_map = {category: i for i, category in enumerate(hh_compositions)}
 reverse_hh_map = {v: k for k, v in hh_map.items()}  # Reverse mapping to decode
 
 # Extract the household composition predictions
-hh_pred = household_nodes[:, 0].long() 
+hh_pred = household_nodes[:, 0].long()
 
 # Flattening size and weight lists
 values_size_org = [k for k in hh_size_df.columns if k not in ['geography code', 'total']]
@@ -65,13 +64,15 @@ class HouseholdAssignmentGNN(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, num_households):
         super(HouseholdAssignmentGNN, self).__init__()
         self.conv1 = SAGEConv(in_channels, hidden_channels)
-        self.conv2 = SAGEConv(hidden_channels, hidden_channels)
+        # self.conv2 = SAGEConv(hidden_channels, hidden_channels)
+        self.conv3 = SAGEConv(hidden_channels, hidden_channels)  # Added third layer
         self.fc = torch.nn.Linear(hidden_channels, num_households)
 
     def forward(self, x, edge_index):
         # GCN layers to process person nodes
         x = self.conv1(x, edge_index).relu()
-        x = self.conv2(x, edge_index).relu()
+        # x = self.conv2(x, edge_index).relu()
+        x = self.conv3(x, edge_index).relu()  # Added third GNN layer
         # Fully connected layer to output logits for each household
         out = self.fc(x)
         return out  # Output shape: (num_persons, num_households)
@@ -90,30 +91,27 @@ def gumbel_softmax(logits, tau=1.0, hard=False):
 
 # Step 3: Create the graph
 num_persons = person_nodes.size(0)
-print(num_persons)
 num_households = household_sizes.size(0)
-print(num_households)
 
 # Define the columns for religion and ethnicity 
 religion_col_persons, religion_col_households = 2, 2
 ethnicity_col_persons, ethnicity_col_households = 3, 1
 
-# Check if the edge_index already exists
+# Step 3: Create the graph with more flexible edge construction (match on religion or ethnicity)
 edge_index_file_path = os.path.join(current_dir, "edge_index.pt")
 if os.path.exists(edge_index_file_path):
-    # Load the saved edge index
     edge_index = torch.load(edge_index_file_path)
     print(f"Loaded edge index from {edge_index_file_path}")
 else:
-    # Step 3: Create the graph with edges only between people with the same religion and ethnicity
     edge_index = [[], []]  # Placeholder for edges
-    cnt = 0 
+    cnt = 0
     for i in range(num_persons):
         if i % 10 == 0:
             print(i)
         for j in range(i + 1, num_persons):  # Avoid duplicate edges by starting at i + 1
-            # Check if both persons have the same religion and ethnicity
-            if person_nodes[i, religion_col_persons] == person_nodes[j, religion_col_persons] and person_nodes[i, ethnicity_col_persons] == person_nodes[j, ethnicity_col_persons]:
+            # Create an edge if either religion OR ethnicity matches
+            if (person_nodes[i, religion_col_persons] == person_nodes[j, religion_col_persons] or
+                person_nodes[i, ethnicity_col_persons] == person_nodes[j, ethnicity_col_persons]):
                 edge_index[0].append(i)
                 edge_index[1].append(j)
                 # Since it's an undirected graph, add both directions
@@ -121,70 +119,42 @@ else:
                 edge_index[1].append(i)
                 cnt += 1
     print(f"Generated {cnt} edges")
-
-    # Convert the edge index list into a tensor
     edge_index = torch.tensor(edge_index, dtype=torch.long)
-
-    # Save the edge_index to a file for future use
     torch.save(edge_index, edge_index_file_path)
     print(f"Edge index saved to {edge_index_file_path}")
 
 # Step 4: Initialize the GNN model
 in_channels = person_nodes.size(1)  # Assuming 5 characteristics per person
-hidden_channels = 32
+hidden_channels = 32  # Increased hidden channels
 model = HouseholdAssignmentGNN(in_channels, hidden_channels, num_households)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)  # Reduced learning rate
+# scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)  # Adaptive LR
 
-# Step 5: Define the compute_loss function
-def compute_loss(assignments, household_sizes, person_nodes, household_nodes, penalty_weight=1.0):
-    # Calculate household size mismatch loss (MSE)
+def compute_loss(assignments, household_sizes, person_nodes, household_nodes, religion_loss_weight=1.0, ethnicity_loss_weight=1.0):
+    # 1. Household size mismatch loss (MSE)
     household_counts = assignments.sum(dim=0)  # Sum the soft assignments across households
-    size_loss = F.mse_loss(household_counts.float(), household_sizes.float())  # MSE loss
+    size_loss = F.mse_loss(household_counts.float(), household_sizes.float())  # MSE loss for household size
 
-    # Calculate penalty for mismatches in ethnicity and religion
-    mismatch_penalty = 0.0
-    for person_idx, household_idx in enumerate(torch.argmax(assignments, dim=1)):
-        person_religion = person_nodes[person_idx, religion_col_persons]
-        person_ethnicity = person_nodes[person_idx, ethnicity_col_persons]
-        household_religion = household_nodes[household_idx, religion_col_households]
-        household_ethnicity = household_nodes[household_idx, ethnicity_col_households]
-        
-        # Penalize if religion or ethnicity doesn't match
-        if person_religion != household_religion or person_ethnicity != household_ethnicity:
-            mismatch_penalty += 1.0
-    
-    # Scale the penalty by the penalty weight
-    total_loss = size_loss + penalty_weight * mismatch_penalty
-    return total_loss
+    # 2. Religion loss (MSE for soft probabilities)
+    religion_col_persons, religion_col_households = 2, 2  # Assuming column 2 for religion
+    person_religion = person_nodes[:, religion_col_persons].float()  # Target (ground truth) religion as a float tensor
+    predicted_religion_scores = assignments @ household_nodes[:, religion_col_households].float()  # Predicted religion (soft scores)
+    religion_loss = F.mse_loss(predicted_religion_scores, person_religion)  # MSE loss for religion
 
-# Step 6: Training loop
-epochs = 100
-tau = 0.05
-penalty_weight = 0.1  # Weight of the mismatch penalty in the loss function
+    # 3. Ethnicity loss (MSE for soft probabilities)
+    ethnicity_col_persons, ethnicity_col_households = 3, 1  # Assuming column 3 for ethnicity
+    person_ethnicity = person_nodes[:, ethnicity_col_persons].float()  # Target (ground truth) ethnicity as a float tensor
+    predicted_ethnicity_scores = assignments @ household_nodes[:, ethnicity_col_households].float()  # Predicted ethnicity (soft scores)
+    ethnicity_loss = F.mse_loss(predicted_ethnicity_scores, person_ethnicity)  # MSE loss for ethnicity
 
-for epoch in range(epochs):
-    optimizer.zero_grad()
-    
-    # Forward pass
-    logits = model(person_nodes, edge_index)  # Shape: (num_persons, num_households)
-    
-    # Apply Gumbel-Softmax to get differentiable assignments
-    assignments = gumbel_softmax(logits, tau=tau, hard=False)  # Shape: (num_persons, num_households)
-    
-    # Calculate the loss using the household sizes as targets
-    loss = compute_loss(assignments, household_sizes, person_nodes, household_nodes, penalty_weight)
-    loss.backward()
-    optimizer.step()
-    
-    # Print the loss for each epoch
-    print(f'Epoch {epoch}, Loss: {loss.item()}')
+    # Combine the losses with weights
+    total_loss = size_loss + (religion_loss_weight * religion_loss) + (ethnicity_loss_weight * ethnicity_loss)
 
-# Step 7: Final assignments after training
-final_assignments = torch.argmax(assignments, dim=1)  # Get final discrete assignments
-# print(final_assignments)
+    return total_loss, size_loss, religion_loss, ethnicity_loss
 
+
+# Compliance Accuracy Function (unchanged)
 def calculate_individual_compliance_accuracy(assignments, person_nodes, household_nodes):
-    # Define the columns for religion and ethnicity in persons and households
     religion_col_persons, religion_col_households = 2, 2
     ethnicity_col_persons, ethnicity_col_households = 3, 1
 
@@ -197,11 +167,9 @@ def calculate_individual_compliance_accuracy(assignments, person_nodes, househol
     for person_idx, household_idx in enumerate(assignments):
         household_idx = household_idx.item()  # Get the household assignment for the person
 
-        # Get the person's religion and ethnicity
         person_religion = person_nodes[person_idx, religion_col_persons]
         person_ethnicity = person_nodes[person_idx, ethnicity_col_persons]
 
-        # Get the household's religion and ethnicity
         household_religion = household_nodes[household_idx, religion_col_households]
         household_ethnicity = household_nodes[household_idx, ethnicity_col_households]
 
@@ -213,19 +181,83 @@ def calculate_individual_compliance_accuracy(assignments, person_nodes, househol
         if person_ethnicity == household_ethnicity:
             correct_ethnicity_assignments += 1
 
-    # Calculate individual compliance accuracy for religion and ethnicity
     religion_compliance = correct_religion_assignments / total_people
     ethnicity_compliance = correct_ethnicity_assignments / total_people
 
-    # Print the results for visual feedback
-    print(f"Religion compliance accuracy (per person): {religion_compliance * 100:.2f}%")
-    print(f"Ethnicity compliance accuracy (per person): {ethnicity_compliance * 100:.2f}%")
-
     return religion_compliance, ethnicity_compliance
 
-# Assuming `final_assignments` contains the assignments after training
-religion_compliance, ethnicity_compliance = calculate_individual_compliance_accuracy(
-    final_assignments,       # The household assignments predicted by the model
-    person_nodes,            # The tensor containing person features (including religion and ethnicity)
-    household_nodes          # The tensor containing household features (including religion and ethnicity)
-)
+# Household Size Accuracy Function (unchanged)
+def calculate_size_distribution_accuracy(assignments, household_sizes):
+    # Step 1: Calculate the predicted sizes (how many people in each household)
+    predicted_counts = torch.zeros_like(household_sizes)  # Start with zeros for each household
+    for household_idx in assignments:
+        predicted_counts[household_idx] += 1  # Increment for each assignment
+    
+    # Step 2: Clamp both predicted and actual sizes to a maximum of 8
+    predicted_counts_clamped = torch.clamp(predicted_counts, min=1, max=8)
+    household_sizes_clamped = torch.clamp(household_sizes, min=1, max=8)
+
+    # Step 3: Calculate bincount of the clamped predicted and actual sizes
+    max_size = 8  # Since we clamped everything above size 8, the max size is now 8
+    predicted_distribution = torch.bincount(predicted_counts_clamped, minlength=max_size).float()
+    actual_distribution = torch.bincount(household_sizes_clamped, minlength=max_size).float()
+
+    # Step 4: Calculate accuracy for each size
+    accuracies = torch.min(predicted_distribution, actual_distribution) / (actual_distribution + 1e-6)  # Avoid division by 0
+    overall_accuracy = accuracies.mean().item()  # Average accuracy across all household sizes
+
+    return overall_accuracy
+
+# Step 6: Training loop with combined loss for religion, ethnicity, and household size
+epochs = 100
+tau = 1.0  # Start with a higher tau
+religion_loss_weight = 1.0  # Initial weight for religion loss
+ethnicity_loss_weight = 1.0  # Initial weight for ethnicity loss
+
+for epoch in range(epochs):
+    optimizer.zero_grad()
+
+    # Forward pass
+    logits = model(person_nodes, edge_index)  # Shape: (num_persons, num_households)
+
+    # Apply Gumbel-Softmax to get differentiable assignments
+    assignments = gumbel_softmax(logits, tau=tau, hard=False)  # Shape: (num_persons, num_households)
+
+    # Calculate the combined loss
+    total_loss, size_loss, religion_loss, ethnicity_loss = compute_loss(
+        assignments, household_sizes, person_nodes, household_nodes, religion_loss_weight, ethnicity_loss_weight
+    )
+    
+    # Backward pass
+    total_loss.backward()
+
+    # Clip gradients to avoid exploding gradients
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+    optimizer.step()
+    # scheduler.step(total_loss)  # Adjust learning rate based on loss
+
+    # Anneal the temperature for Gumbel-Softmax more slowly
+    tau = max(0.5, tau * 0.995)
+
+    # Step 7: Final assignments after training
+    final_assignments = torch.argmax(assignments, dim=1)  # Get final discrete assignments
+
+    # Calculate religion and ethnicity compliance accuracies
+    religion_compliance, ethnicity_compliance = calculate_individual_compliance_accuracy(
+        final_assignments,       
+        person_nodes,            
+        household_nodes          
+    )
+
+    # Calculate household size distribution accuracy
+    household_size_accuracy = calculate_size_distribution_accuracy(final_assignments, household_sizes)
+
+    # Print the loss and accuracies for the epoch
+    print(f'Epoch {epoch}, Total Loss: {total_loss.item()}')
+    print(f"Household size loss: {size_loss.item()}")
+    print(f"Religion loss: {religion_loss.item()}")
+    print(f"Ethnicity loss: {ethnicity_loss.item()}")
+    print(f"Religion compliance accuracy: {religion_compliance * 100:.2f}%")
+    print(f"Ethnicity compliance accuracy: {ethnicity_compliance * 100:.2f}%")
+    print(f"Household size distribution accuracy: {household_size_accuracy * 100:.2f}%")
