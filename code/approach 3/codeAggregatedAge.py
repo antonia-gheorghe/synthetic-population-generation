@@ -339,7 +339,7 @@ for epoch in range(num_epochs):
             print('-------------------------------------')
 
 # Get the final predictions after training
-model.eval()  # Set model to evaluation mode
+# model.eval()  # Set model to evaluation mode
 with torch.no_grad():
     age_out, sex_out, ethnicity_out, religion_out, marital_out = model(data)
     age_pred = age_out[:num_persons].argmax(dim=1)

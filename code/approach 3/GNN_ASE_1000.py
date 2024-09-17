@@ -134,7 +134,7 @@ for epoch in range(num_epochs):
         print(f'Epoch {epoch}, Loss: {loss.item()}, Age Accuracy: {age_accuracy:.4f}, Sex Accuracy: {sex_accuracy:.4f}, Ethnicity Accuracy: {ethnicity_accuracy:.4f}, Net Accuracy: {net_accuracy:.4f}')
 
 # Get the final predictions after training
-model.eval()
+# model.eval()
 with torch.no_grad():
     age_out, sex_out, ethnicity_out = model(data)
     age_pred = age_out[:num_persons].argmax(dim=1)

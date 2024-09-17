@@ -113,8 +113,8 @@ y_ethnicity = torch.zeros(num_persons, dtype=torch.long)
 # Populate target tensors based on the cross table
 person_idx = 0
 for _, row in ethnic_by_sex_by_age_df.iterrows():
-    for age in age_groups:
-        for sex in sex_categories:
+    for sex in sex_categories:
+        for age in age_groups:
             for ethnicity in ethnicity_categories:
                 col_name = f'{sex} {age} {ethnicity}'
                 count = int(row.get(col_name, 0))
@@ -218,7 +218,7 @@ for epoch in range(num_epochs):
         print(f'Epoch {epoch}, Loss: {loss.item()}, Age Accuracy: {age_accuracy:.4f}, Sex Accuracy: {sex_accuracy:.4f}, Ethnicity Accuracy: {ethnicity_accuracy:.4f}, Net Accuracy: {net_accuracy:.4f}')
 
 # Get the final predictions after training
-model.eval()  # Set model to evaluation mode
+# model.eval()  # Set model to evaluation mode
 with torch.no_grad():
     age_out, sex_out, ethnicity_out = model(data)
     age_pred = age_out[:num_persons].argmax(dim=1)
@@ -251,10 +251,10 @@ comparison_df = pd.DataFrame({
     "Predicted": [predicted_counts[key] for key in observed_counts.keys()]
 })
 
-# # Save the comparison DataFrame to a CSV file
-# output_path = os.path.join(current_dir, 'comparison_results.csv')
-# comparison_df.to_csv(output_path, index=False)
-#
-# # Print the comparison DataFrame
-# print("Comparison results saved to:", output_path)
-# print(comparison_df)
+# Save the comparison DataFrame to a CSV file
+output_path = os.path.join(current_dir, 'comparison_results.csv')
+comparison_df.to_csv(output_path, index=False)
+
+# Print the comparison DataFrame
+print("Comparison results saved to:", output_path)
+print(comparison_df)

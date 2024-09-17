@@ -216,7 +216,7 @@ for epoch in range(num_epochs):
     data.edge_index = construct_edge_index_from_predictions(num_persons, age_pred, sex_pred, ethnicity_pred)
 
 # Get the final predictions after training
-model.eval()  # Set model to evaluation mode
+# model.eval()  # Set model to evaluation mode
 with torch.no_grad():
     age_out, sex_out, ethnicity_out = model(data)
     age_pred = age_out[:num_persons].argmax(dim=1)

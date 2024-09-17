@@ -1,11 +1,10 @@
+import json
 import os
 import pandas as pd
-import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
-from torch_geometric.nn import SAGEConv, BatchNorm
-from torch.nn import CrossEntropyLoss
+from torch_geometric.nn import SAGEConv, GraphNorm
 import random
 
 # Device selection: Use MPS (Metal Performance Shaders) for Mac M1 GPU, or fallback to CPU
@@ -37,10 +36,12 @@ def get_target_tensors(cross_table, feature_1_categories, feature_1_map, feature
 
 # Load the data from individual tables
 current_dir = os.path.dirname(os.path.abspath(__file__))
+print(current_dir)
 age_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/individual/Age_5yrs.csv'))
 sex_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/individual/Sex.csv'))
 ethnicity_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/individual/Ethnic.csv'))
 religion_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/individual/Religion.csv'))
+marital_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/individual/Marital.csv'))
 ethnic_by_sex_by_age_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/crosstables/ethnic_by_sex_by_age_modified.csv'))
 religion_by_sex_by_age_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/crosstables/religion_by_sex_by_age.csv'))
 marital_by_sex_by_age_df = pd.read_csv(os.path.join(current_dir, '../../data/preprocessed-data/crosstables/marital_by_sex_by_age.csv'))
@@ -53,6 +54,7 @@ age_df = age_df[age_df['geography code'].isin(oxford_areas)]
 sex_df = sex_df[sex_df['geography code'].isin(oxford_areas)]
 ethnicity_df = ethnicity_df[ethnicity_df['geography code'].isin(oxford_areas)]
 religion_df = religion_df[religion_df['geography code'].isin(oxford_areas)]
+marital_df = marital_df[marital_df['geography code'].isin(oxford_areas)]
 ethnic_by_sex_by_age_df = ethnic_by_sex_by_age_df[ethnic_by_sex_by_age_df['geography code'].isin(oxford_areas)]
 religion_by_sex_by_age_df = religion_by_sex_by_age_df[religion_by_sex_by_age_df['geography code'].isin(oxford_areas)]
 marital_by_sex_by_age_df = marital_by_sex_by_age_df[marital_by_sex_by_age_df['geography code'].isin(oxford_areas)]
@@ -95,6 +97,13 @@ marital_nodes = torch.tensor([[marital_map[marital]] for marital in marital_cate
 # Combine all nodes into a single tensor
 node_features = torch.cat([person_nodes, age_nodes, sex_nodes, ethnicity_nodes, religion_nodes, marital_nodes], dim=0).to(device)
 
+# Calculate the distribution for age categories
+age_probabilities = age_df.drop(columns = ["geography code", "total"]) / num_persons
+sex_probabilities = sex_df.drop(columns = ["geography code", "total"]) / num_persons
+ethnicity_probabilities = ethnicity_df.drop(columns = ["geography code", "total"]) / num_persons
+religion_probabilities = religion_df.drop(columns = ["geography code", "total"]) / num_persons
+marital_probabilities = marital_df.drop(columns = ["geography code", "total"]) / num_persons
+
 # New function to generate edge index
 def generate_edge_index(num_persons):
     edge_index = []
@@ -104,12 +113,21 @@ def generate_edge_index(num_persons):
     religion_start_idx = ethnicity_start_idx + len(ethnicity_categories)
     marital_start_idx = religion_start_idx + len(religion_categories)
 
+    # Convert the probability series to a list of probabilities for sampling
+    age_prob_list = age_probabilities.values.tolist()[0]
+    sex_prob_list = sex_probabilities.values.tolist()[0]
+    ethnicity_prob_list = ethnicity_probabilities.values.tolist()[0]
+    religion_prob_list = religion_probabilities.values.tolist()[0]
+    marital_prob_list = marital_probabilities.values.tolist()[0]
+
     for i in range(num_persons):
-        age_category = random.choice(range(age_start_idx, sex_start_idx))
-        sex_category = random.choice(range(sex_start_idx, ethnicity_start_idx))
-        ethnicity_category = random.choice(range(ethnicity_start_idx, ethnicity_start_idx + len(ethnicity_categories)))
-        religion_category = random.choice(range(religion_start_idx, religion_start_idx + len(religion_categories)))
-        marital_category = random.choice(range(marital_start_idx, marital_start_idx + len(marital_categories)))
+        # Sample the categories using weighted random sampling
+        age_category = random.choices(range(age_start_idx, sex_start_idx), weights=age_prob_list, k=1)[0]
+        sex_category = random.choices(range(sex_start_idx, ethnicity_start_idx), weights=sex_prob_list, k=1)[0]
+        ethnicity_category = random.choices(range(ethnicity_start_idx, religion_start_idx), weights=ethnicity_prob_list, k=1)[0]
+        religion_category = random.choices(range(religion_start_idx, marital_start_idx), weights=religion_prob_list, k=1)[0]
+        marital_category = random.choices(range(marital_start_idx, marital_start_idx + len(marital_categories)), weights=marital_prob_list, k=1)[0]
+        
         # Append edges for each category
         edge_index.append([i, age_category])
         edge_index.append([i, sex_category])
@@ -156,16 +174,39 @@ class EnhancedGNNModel(torch.nn.Module):
         self.conv2 = SAGEConv(hidden_channels, hidden_channels)
         self.conv3 = SAGEConv(hidden_channels, hidden_channels)
         self.conv4 = SAGEConv(hidden_channels, hidden_channels)
-        self.batch_norm1 = BatchNorm(hidden_channels)
-        self.batch_norm2 = BatchNorm(hidden_channels)
-        self.batch_norm3 = BatchNorm(hidden_channels)
-        self.batch_norm4 = BatchNorm(hidden_channels)
+        self.batch_norm1 = GraphNorm(hidden_channels)
+        self.batch_norm2 = GraphNorm(hidden_channels)
+        self.batch_norm3 = GraphNorm(hidden_channels)
+        self.batch_norm4 = GraphNorm(hidden_channels)
         self.dropout = torch.nn.Dropout(0.5)
-        self.conv5_age = SAGEConv(hidden_channels, out_channels_age)
-        self.conv5_sex = SAGEConv(hidden_channels, out_channels_sex)
-        self.conv5_ethnicity = SAGEConv(hidden_channels, out_channels_ethnicity)
-        self.conv5_religion = SAGEConv(hidden_channels, out_channels_religion)
-        self.conv5_marital = SAGEConv(hidden_channels, out_channels_marital)
+        
+        # Add an MLP (two fully connected layers with non-linearity) for each output
+        mlp_hidden_size = 256  # Set this based on your preference
+        self.mlp_age = torch.nn.Sequential(
+            torch.nn.Linear(hidden_channels, mlp_hidden_size),
+            torch.nn.ReLU(),
+            torch.nn.Linear(mlp_hidden_size, out_channels_age)
+        )
+        self.mlp_sex = torch.nn.Sequential(
+            torch.nn.Linear(hidden_channels, mlp_hidden_size),
+            torch.nn.ReLU(),
+            torch.nn.Linear(mlp_hidden_size, out_channels_sex)
+        )
+        self.mlp_ethnicity = torch.nn.Sequential(
+            torch.nn.Linear(hidden_channels, mlp_hidden_size),
+            torch.nn.ReLU(),
+            torch.nn.Linear(mlp_hidden_size, out_channels_ethnicity)
+        )
+        self.mlp_religion = torch.nn.Sequential(
+            torch.nn.Linear(hidden_channels, mlp_hidden_size),
+            torch.nn.ReLU(),
+            torch.nn.Linear(mlp_hidden_size, out_channels_religion)
+        )
+        self.mlp_marital = torch.nn.Sequential(
+            torch.nn.Linear(hidden_channels, mlp_hidden_size),
+            torch.nn.ReLU(),
+            torch.nn.Linear(mlp_hidden_size, out_channels_marital)
+        )
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -185,11 +226,14 @@ class EnhancedGNNModel(torch.nn.Module):
         x = self.batch_norm4(x)
         x = F.relu(x)
         x = self.dropout(x)
-        age_out = self.conv5_age(x, edge_index)
-        sex_out = self.conv5_sex(x, edge_index)
-        ethnicity_out = self.conv5_ethnicity(x, edge_index)
-        religion_out = self.conv5_religion(x, edge_index)
-        marital_out = self.conv5_marital(x, edge_index)
+        
+        # Pass through MLPs for each prediction task
+        age_out = self.mlp_age(x[:num_persons])
+        sex_out = self.mlp_sex(x[:num_persons])
+        ethnicity_out = self.mlp_ethnicity(x[:num_persons])
+        religion_out = self.mlp_religion(x[:num_persons])
+        marital_out = self.mlp_marital(x[:num_persons])
+        
         return age_out, sex_out, ethnicity_out, religion_out, marital_out
 
 # Custom loss function
@@ -208,8 +252,12 @@ model = EnhancedGNNModel(in_channels=node_features.size(1), hidden_channels=512,
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 # weight_decay=5e-4
 
+# Save numbers
+loss_data = {}
+acc_data = {}
+
 # Training loop
-num_epochs = 7500
+num_epochs = 20000
 for epoch in range(num_epochs):
     model.train()  # Set model to training mode
     optimizer.zero_grad()  # Clear gradients
@@ -236,28 +284,48 @@ for epoch in range(num_epochs):
     loss.backward()
     optimizer.step()
 
-    # Print metrics every 100 epochs
+    loss_data[epoch] = loss.item()
     if epoch % 100 == 0:
         print(f'Epoch {epoch}, Loss: {loss.item()}')
 
-        with torch.no_grad():
-            for i in range(len(targets)):
+    acc_data[epoch] = {}
+    with torch.no_grad():
+        for i in range(len(targets)):
+            acc_data[epoch][f'{targets[i][0][0]}, {targets[i][0][1]}, {targets[i][0][2]}'] = {}
+            if epoch % 100 == 0:
                 print(f'Accuracy for {targets[i][0][0]}, {targets[i][0][1]}, {targets[i][0][2]}:')
 
-                for j in range(3):
-                    pred = out[targets[i][0][j]].argmax(dim=1)
-                    accuracy = (pred == targets[i][1][j]).sum().item() / num_persons
+            for j in range(3):
+                pred = out[targets[i][0][j]].argmax(dim=1)
+                accuracy = (pred == targets[i][1][j]).sum().item() / num_persons
+
+                acc_data[epoch][f'{targets[i][0][0]}, {targets[i][0][1]}, {targets[i][0][2]}'][f'{targets[i][0][j]}'] = accuracy
+                if epoch % 100 == 0:
                     print(f'    Accuracy for {targets[i][0][j]}: {accuracy:.4f}')
-                
-                pred_1 = out[targets[i][0][0]].argmax(dim=1)
-                pred_2 = out[targets[i][0][1]].argmax(dim=1)
-                pred_3 = out[targets[i][0][2]].argmax(dim=1)
-                net_accuracy = ((pred_1 == targets[i][1][0]) & (pred_2 == targets[i][1][1]) & (pred_3 == targets[i][1][2])).sum().item() / num_persons
+            
+            pred_1 = out[targets[i][0][0]].argmax(dim=1)
+            pred_2 = out[targets[i][0][1]].argmax(dim=1)
+            pred_3 = out[targets[i][0][2]].argmax(dim=1)
+            net_accuracy = ((pred_1 == targets[i][1][0]) & (pred_2 == targets[i][1][1]) & (pred_3 == targets[i][1][2])).sum().item() / num_persons
+            
+            acc_data[epoch][f'{targets[i][0][0]}, {targets[i][0][1]}, {targets[i][0][2]}']['net'] = net_accuracy
+            if epoch % 100 == 0:
                 print(f'    Net accuracy: {net_accuracy:.4f}')
+        if epoch % 100 == 0:
             print('-------------------------------------')
 
+# save loss and accuracy data as json
+loss_data_path = os.path.join(current_dir, '../results/individual/loss_data.json')
+acc_data_path = os.path.join(current_dir, '../results/individual/acc_data.json')
+
+with open(loss_data_path, 'w') as f:
+    json.dump(loss_data, f)
+
+with open(acc_data_path, 'w') as f:
+    json.dump(acc_data, f)
+
 # Get the final predictions after training
-model.eval()  # Set model to evaluation mode
+# model.eval()  # Set model to evaluation mode
 with torch.no_grad():
     age_out, sex_out, ethnicity_out, religion_out, marital_out = model(data)
     age_pred = age_out[:num_persons].argmax(dim=1)
@@ -294,6 +362,14 @@ for age in age_groups:
 
 # Calculate predicted counts
 predicted_counts = {}
+for age in age_groups:
+    for sex in sex_categories:
+        for ethnicity in ethnicity_categories:
+            for religion in religion_categories:
+                for marital in marital_categories:
+                    key = f"{age}-{sex}-{ethnicity}-{religion}-{marital}"
+                    predicted_counts[key] = 0
+
 for i in range(num_persons):
     age = age_groups[age_pred[i]]
     sex = sex_categories[sex_pred[i]]
@@ -301,29 +377,16 @@ for i in range(num_persons):
     religion = religion_categories[religion_pred[i]]
     marital = marital_categories[marital_pred[i]]
     key = f"{age}-{sex}-{ethnicity}-{religion}-{marital}"
-    if key in predicted_counts:
-        predicted_counts[key] += 1
-    else:
-        predicted_counts[key] = 1
+    predicted_counts[key] += 1
 
-# Create a DataFrame for comparison
-# print(age_sex_ethnicity_counts.keys())
-# print(age_sex_religion_counts.keys())
-# print(age_sex_marital_counts.keys())
-# print(predicted_counts.keys())
+counts_data = {}
 
+counts_data['age_sex_ethnicity_counts'] = age_sex_ethnicity_counts
+counts_data['age_sex_religion_counts'] = age_sex_religion_counts
+counts_data['age_sex_marital_counts'] = age_sex_marital_counts
+counts_data['age_sex_ethnicity_religion_marital_counts'] = predicted_counts
 
-# comparison_df = pd.DataFrame({
-#     "age_sex_ethnicity_counts": list(age_sex_ethnicity_counts.keys()),
-#     "age_sex_religion_counts": list(age_sex_religion_counts.keys()),
-#     "age_sex_marital_counts": list(age_sex_marital_counts.keys()),
-#     "age_sex_ethnicity_religion_marital_counts": list(predicted_counts.keys()),
-# })
-
-# # Save the comparison DataFrame to a CSV file
-# output_path = os.path.join(current_dir, 'comparison_results.csv')
-# comparison_df.to_csv(output_path, index=False)
-
-# # Print the comparison DataFrame
-# print("Comparison results saved to:", output_path)
-# print(comparison_df)
+# Save the comparison DataFrame to a json file
+output_path = os.path.join(current_dir, '../results/individual/counts.json')
+with open(output_path, 'w') as f:
+    json.dump(counts_data, f)
